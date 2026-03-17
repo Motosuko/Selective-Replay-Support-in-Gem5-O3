@@ -1063,14 +1063,14 @@ InstructionQueue::commit(const InstSeqNum &inst, ThreadID tid)
 
     ListIt iq_it = instList[tid].begin();
 
-/**    while (iq_it != instList[tid].end() &&
+    while (iq_it != instList[tid].end() &&
            (*iq_it)->seqNum <= inst) {
         ++iq_it;
         instList[tid].pop_front();
-    } */
+    } 
     
     /** Selective Replay Support BEGIN */
-    while (iq_it != instList[tid].end() && (*iq_it)->seqNum <= inst) {
+    /**while (iq_it != instList[tid].end() && (*iq_it)->seqNum <= inst) {
 
         if ((*iq_it)->dependenceVector == 0) {
              printf("Removing from instList an instruction that has 0 dependencies.\n");
@@ -1079,7 +1079,7 @@ InstructionQueue::commit(const InstSeqNum &inst, ThreadID tid)
         else {
 	     ++iq_it;
 	} 
-    }
+    }*/
     /** Selective Replay Support END */
 }
 
