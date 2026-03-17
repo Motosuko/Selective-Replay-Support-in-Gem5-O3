@@ -49,7 +49,7 @@ bool
 TokenManager::deallocateTokenID(unsigned token) {
 
     if (token <= MaxTokenID && token > 0) {
-        activeTokens &= ~(1 << (token-1)); // Unset allocation flag for token.
+        activeTokens &= ~((uint64_t)1 << (token-1)); // Unset allocation flag for token.
         // printf("Current token allocation during deallocation: %lu\n", activeTokens);
         _decrementCurrentActiveTokenCount();
         return true;

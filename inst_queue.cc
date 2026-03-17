@@ -1065,6 +1065,10 @@ InstructionQueue::commit(const InstSeqNum &inst, ThreadID tid)
 
     while (iq_it != instList[tid].end() &&
            (*iq_it)->seqNum <= inst) {
+        // Clear the selective replay flag for committed instructions
+        // so it does not persist if the same DynInst object is ever
+        // revisited, keeping flag state consistent with instruction lifetime.
+        (*iq_it)->needsReplay = false;
         ++iq_it;
         instList[tid].pop_front();
     } 
@@ -1290,6 +1294,27 @@ InstructionQueue::violation(const DynInstPtr &store,
         const DynInstPtr &faulting_load)
 {
     iqIOStats.intInstQueueWrites++;
+
+    /** Selective Replay Support BEGIN */
+    // Identify all younger in-flight instructions that depend on the
+    // faulting load's token and mark them for selective replay.
+    // Only process valid token IDs (1..MaxTokenID); tokenID==0 means no
+    // token and tokenID==MaxTokenID+1 means allocation failed.
+    const unsigned tokenID = faulting_load->tokenID;
+    if (tokenID >= 1 && tokenID <= (unsigned)MaxTokenID) {
+        const ThreadID tid = faulting_load->threadNumber;
+        const TokenManager::TokenDependenceVector tokenBit =
+            (TokenManager::TokenDependenceVector)1 << (tokenID - 1);
+        for (auto &inst : instList[tid]) {
+            if (inst->seqNum > faulting_load->seqNum &&
+                !inst->isSquashed() &&
+                (inst->dependenceVector & tokenBit)) {
+                inst->needsReplay = true;
+            }
+        }
+    }
+    /** Selective Replay Support END */
+
     memDepUnit[store->threadNumber].violation(store, faulting_load);
 }
 
@@ -1453,6 +1478,11 @@ InstructionQueue::doSquash(ThreadID tid)
         }
         instList[tid].erase(squash_it--);
         ++iqStats.squashedInstsExamined;
+
+        // Clear selective replay flag for squashed instructions so it does
+        // not persist when the instruction is re-renamed and re-entered into
+        // the pipeline.
+        squashed_inst->needsReplay = false;
     }
 }
 

@@ -1140,11 +1140,14 @@ Rename::renameDestRegs(const DynInstPtr &inst, ThreadID tid)
     /* Selective Replay Support */
     if (inst->isLoad()) {
         // Allocate a new, free token ID to "represent" this load.
-        if (tokenManager.allocateTokenID(inst)) {
-            stats.tokenAllocations.sample(tokenManager.currentNumActiveTokens);
-        }
-        else {
-            stats.tokenOverAllocationEvents = tokenManager.tokenOverAllocationCount;
+        const bool ok = tokenManager.allocateTokenID(inst);
+
+        // Record which token ID was assigned (index 0..MaxTokenID+1).
+        // tokenAllocations is initialized to MaxTokenID+2 bins in RenameStats.
+        stats.tokenAllocations[inst->tokenID]++;
+
+        if (!ok) {
+            ++stats.tokenOverAllocationEvents;
         }
     }
     inst->dependenceVector = 0;
@@ -1209,15 +1212,18 @@ Rename::renameDestRegs(const DynInstPtr &inst, ThreadID tid)
             TokenManager::TokenDependenceVector existing_dest_dependence_vector = dependenceVectors.find(renamed_dest_reg) != dependenceVectors.end() ? dependenceVectors[renamed_dest_reg] : 0;
 
             // Record dependence on this token for this destination register.
-            if (inst->tokenID)
-                dependenceVectors[renamed_dest_reg] = existing_dest_dependence_vector | (1 << (inst->tokenID - 1));
+            // Only set the bit for valid token IDs (1..MaxTokenID); tokenID==0
+            // means no token and tokenID==MaxTokenID+1 means allocation failed.
+            if (inst->tokenID >= 1 && inst->tokenID <= (unsigned)MaxTokenID)
+                dependenceVectors[renamed_dest_reg] = existing_dest_dependence_vector |
+                    ((TokenManager::TokenDependenceVector)1 << (inst->tokenID - 1));
 
             // TODO: Handle these structural issues of no more tokens being able to be allocated.
         }
 
         // Propagate forward all dependences of source registers.
         unsigned num_src_regs = inst->numSrcRegs();
-        uint32_t src_dependence_vector_ac = 0;
+        TokenManager::TokenDependenceVector src_dependence_vector_ac = 0;
 
         for (int src_idx = 0; src_idx < num_src_regs; src_idx++) {
 

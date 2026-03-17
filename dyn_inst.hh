@@ -369,6 +369,12 @@ class DynInst : public ExecContext, public RefCounted
     /** Pointer to TokenManager object for dependence token management. */
     TokenManager *tokenManager = nullptr;
 
+    /** Set when this instruction has been identified as needing selective replay
+     *  (its value depends on a load that was later found to have violated ordering).
+     *  Cleared on squash or commit.  Does not hold a DynInstPtr reference.
+     */
+    bool needsReplay = false;
+
     /** Selective Replay Support END */    
 
 

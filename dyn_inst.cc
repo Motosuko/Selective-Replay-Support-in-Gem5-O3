@@ -219,8 +219,12 @@ DynInst::~DynInst()
         
     /** Selective Replay Support BEGIN */
 
-    // Deallocate token (if LOAD instruction) since this instruction has now completed!
-    if (isLoad()) {
+    // Deallocate token at destruction time as a safety net.
+    // Guard against null tokenManager and only deallocate valid token IDs
+    // (1..MaxTokenID); tokenID==0 means no token, tokenID==MaxTokenID+1 means
+    // allocation failed — neither should be deallocated.
+    if (tokenManager && isLoad() &&
+        tokenID >= 1 && tokenID <= (unsigned)MaxTokenID) {
         tokenManager->deallocateTokenID(tokenID);
     }
 
