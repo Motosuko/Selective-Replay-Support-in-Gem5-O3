@@ -710,9 +710,19 @@ InstructionQueue::insert(const DynInstPtr &new_inst)
     /** Selective Replay Support BEGIN
      *  If this instruction carries a non-zero dependence vector it consumes
      *  the result of at least one load that was assigned a replay token.
-     *  Add it to the per-thread replayQueue so violation() can find it
-     *  in O(replayQ) rather than scanning the whole instList.
+     *
+     *  Before adding to the replayQueue, mask the dependenceVector against
+     *  the set of currently-allocated tokens.  There is a pipeline window
+     *  between rename (where depVec bits are set) and IQ dispatch where the
+     *  governing load may have already committed and freed its token.  If we
+     *  keep the stale bit, commit() will never find a load in instList to
+     *  sweep it out, leaving the instruction stuck in instList forever and
+     *  causing cpu->instcount to exceed the 1500-entry assertion limit.
+     *  Clearing bits for inactive tokens is safe: the load committed
+     *  successfully, so no violation can arise from it.
      */
+    new_inst->dependenceVector &= TokenManager::getActiveTokens();
+
     if (new_inst->dependenceVector) {
         replayQueue[new_inst->threadNumber].push_back(new_inst);
         DPRINTF(IQ, "[sn:%llu] Added to selective replay queue "
@@ -762,6 +772,15 @@ InstructionQueue::insertNonSpec(const DynInstPtr &new_inst)
     if (new_inst->isMemRef()) {
         memDepUnit[new_inst->threadNumber].insertNonSpec(new_inst);
     }
+
+    /** Selective Replay Support BEGIN
+     *  Non-speculative instructions are not added to the replayQueue, so
+     *  stale depVec bits would never be swept out and the instruction would
+     *  be stuck in instList.  Apply the same active-token mask here so that
+     *  commit() can erase the entry normally.
+     */
+    new_inst->dependenceVector &= TokenManager::getActiveTokens();
+    /** Selective Replay Support END */
 
     ++iqStats.nonSpecInstsAdded;
 }

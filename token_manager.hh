@@ -40,6 +40,16 @@ class TokenManager
     /** Deallocate specified token (to be used when instructions commit). */
     bool deallocateTokenID(unsigned token);
 
+    /** Return the current bitmask of allocated (active) tokens.
+     *  Used by InstructionQueue::insert() to filter out stale depVec bits
+     *  at dispatch time: if a bit is set in a dependent instruction's
+     *  dependenceVector but the corresponding token is no longer active
+     *  (its governing load has already committed and freed the token), that
+     *  bit should be cleared so the instruction does not get stuck in
+     *  instList waiting for a sweep that will never happen.
+     */
+    static TokenDependenceVector getActiveTokens() { return activeTokens; }
+
     /** Modifiers for debugging token allocation state tracking */
     void _incrementCurrentActiveTokenCount();
     void _decrementCurrentActiveTokenCount();

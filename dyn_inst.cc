@@ -225,6 +225,12 @@ DynInst::~DynInst()
     // allocation failed — neither should be deallocated.
     if (tokenManager && isLoad() &&
         tokenID >= 1 && tokenID <= MaxTokenID) {
+        // A non-zero tokenID at destruction means the eager release in
+        // InstructionQueue::commit() was not reached for this instruction
+        // (e.g. it was squashed before committing).  This is expected for
+        // squashed loads.  For committed loads the tokenID should have been
+        // zeroed by commit(); reaching here with tokenID != 0 for a committed
+        // load would indicate a missed deallocation.
         tokenManager->deallocateTokenID(tokenID);
     }
 
