@@ -1278,9 +1278,11 @@ Rename::renameDestRegs(const DynInstPtr &inst, ThreadID tid)
     // so that the rename-stage intent is visible in trace output.
     if (inst->dependenceVector) {
         DPRINTF(Rename, "[tid:%i] [sn:%llu] Instruction has non-zero "
-                "dependence vector 0x%lx; will be tracked in IQ replay "
-                "queue on dispatch.\n",
-                tid, inst->seqNum, inst->dependenceVector);
+                "dependence vector 0x%016llx%016llx; will be tracked in IQ "
+                "replay queue on dispatch.\n",
+                tid, inst->seqNum,
+                (unsigned long long)(inst->dependenceVector >> 64),
+                (unsigned long long)(inst->dependenceVector));
     }
 }
 

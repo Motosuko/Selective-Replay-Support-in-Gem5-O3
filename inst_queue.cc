@@ -716,8 +716,10 @@ InstructionQueue::insert(const DynInstPtr &new_inst)
     if (new_inst->dependenceVector) {
         replayQueue[new_inst->threadNumber].push_back(new_inst);
         DPRINTF(IQ, "[sn:%llu] Added to selective replay queue "
-                "(depVec=0x%lx).\n",
-                new_inst->seqNum, new_inst->dependenceVector);
+                "(depVec=0x%016llx%016llx).\n",
+                new_inst->seqNum,
+                (unsigned long long)(new_inst->dependenceVector >> 64),
+                (unsigned long long)(new_inst->dependenceVector));
     }
     /** Selective Replay Support END */
 
@@ -1120,6 +1122,18 @@ InstructionQueue::commit(const InstSeqNum &inst, ThreadID tid)
             DPRINTF(IQ, "[tid:%i] [sn:%llu] Load committed; freed token %u "
                     "from replayQueue.\n",
                     tid, (*iq_it)->seqNum, (*iq_it)->tokenID);
+
+            /** Token deallocation: release back to the free-list immediately
+             *  on commit.  Waiting until DynInst destruction is too late:
+             *  the DynInstPtr is held by the ROB history buffer and other
+             *  structures long after commit, exhausting the 128-entry pool.
+             *  Zero tokenID so the DynInst destructor safety-net does not
+             *  double-free the same slot.
+             */
+            if ((*iq_it)->tokenManager) {
+                (*iq_it)->tokenManager->deallocateTokenID((*iq_it)->tokenID);
+            }
+            (*iq_it)->tokenID = 0;
         }
 
         // Only remove instructions from instList whose dependence vector is
