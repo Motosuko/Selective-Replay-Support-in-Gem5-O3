@@ -550,7 +550,7 @@ class Rename
         
         /** Selective Replay Support Stats*/
         /** track token allocation patterns and overflow event*/
-        statistics::Histogram tokenAllocations;
+        statistics::Vector tokenAllocations;
         statistics::Scalar tokenOverAllocationEvents;
         /** END of Selective Replay Support Stats */        
         

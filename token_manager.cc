@@ -10,7 +10,7 @@ namespace gem5
 namespace o3
 {
 
-uint64_t TokenManager::activeTokens = 0;
+unsigned __int128 TokenManager::activeTokens = 0;
 unsigned TokenManager::lastAllocatedToken = 0;
 unsigned TokenManager::maxNumActiveTokens = 0;
 unsigned TokenManager::currentNumActiveTokens = 0;
@@ -27,8 +27,8 @@ TokenManager::allocateTokenID(const DynInstPtr &inst) {
     // Check to make sure we haven't gone over the max allowed token value.
     for (int query_attempt = 0; query_attempt < MaxTokenID; query_attempt++)
     {
-        if (!(activeTokens & ((uint64_t) 1 << query_idx))) { // if token with index "query_idx" is not-allocated, let's allocate it
-            activeTokens |= ((uint64_t) 1 << query_idx);
+        if (!(activeTokens & ((unsigned __int128) 1 << query_idx))) { // if token with index "query_idx" is not-allocated, let's allocate it
+            activeTokens |= ((unsigned __int128) 1 << query_idx);
             inst->tokenID = query_idx + 1; // Represents a token, value 1 - max tokens
             lastAllocatedToken = query_idx + 1;
             _incrementCurrentActiveTokenCount();
@@ -49,7 +49,7 @@ bool
 TokenManager::deallocateTokenID(unsigned token) {
 
     if (token <= MaxTokenID && token > 0) {
-        activeTokens &= ~(1 << (token-1)); // Unset allocation flag for token.
+        activeTokens &= ~((unsigned __int128)1 << (token-1)); // Unset allocation flag for token.
         // printf("Current token allocation during deallocation: %lu\n", activeTokens);
         _decrementCurrentActiveTokenCount();
         return true;

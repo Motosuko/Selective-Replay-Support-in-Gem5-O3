@@ -1140,11 +1140,14 @@ Rename::renameDestRegs(const DynInstPtr &inst, ThreadID tid)
     /* Selective Replay Support */
     if (inst->isLoad()) {
         // Allocate a new, free token ID to "represent" this load.
-        if (tokenManager.allocateTokenID(inst)) {
-            stats.tokenAllocations.sample(tokenManager.currentNumActiveTokens);
-        }
-        else {
-            stats.tokenOverAllocationEvents = tokenManager.tokenOverAllocationCount;
+        const bool ok = tokenManager.allocateTokenID(inst);
+
+        // Record which token ID was assigned (index 0..MaxTokenID+1).
+        // tokenAllocations is initialized to MaxTokenID+2 bins in RenameStats.
+        stats.tokenAllocations[inst->tokenID]++;
+
+        if (!ok) {
+            ++stats.tokenOverAllocationEvents;
         }
     }
     inst->dependenceVector = 0;
@@ -1203,45 +1206,83 @@ Rename::renameDestRegs(const DynInstPtr &inst, ThreadID tid)
 
         uint16_t renamed_dest_reg = rename_result.first->index();
 
-        // Allocate token and record new dependence (to be trickled down) if instruction is load.
-        if (inst->isLoad()) {
-
-            TokenManager::TokenDependenceVector existing_dest_dependence_vector = dependenceVectors.find(renamed_dest_reg) != dependenceVectors.end() ? dependenceVectors[renamed_dest_reg] : 0;
-
-            // Record dependence on this token for this destination register.
-            if (inst->tokenID)
-                dependenceVectors[renamed_dest_reg] = existing_dest_dependence_vector | (1 << (inst->tokenID - 1));
-
-            // TODO: Handle these structural issues of no more tokens being able to be allocated.
-        }
+        /** Selective Replay Support BEGIN
+         *
+         *  Compute the accumulated dependency vector from this instruction's
+         *  source registers FIRST.  Then assign a fresh (non-ORed) value to
+         *  dependenceVectors[dest], eliminating two bugs:
+         *
+         *  Bug 1 – stale bits: dependenceVectors[phys_reg] is never reset
+         *  when the physical register is freed and re-allocated.  If we OR
+         *  with the existing entry, new instructions inherit bits from
+         *  previous uses of the same physical register.  Those bits are
+         *  never cleared (the old load has already been destroyed), so the
+         *  instructions accumulate in replayQueue indefinitely.
+         *
+         *  Bug 2 – load self-token: the old code ORed the load's own token
+         *  bit into dependenceVectors[dest] *before* propagating sources, and
+         *  then did inst->dependenceVector |= dependenceVectors[dest].  This
+         *  put the load's OWN token bit into the load's own dependenceVector.
+         *  Because that bit is only cleared in commit() when the load's token
+         *  is re-encountered (which never happens while the load's DynInst is
+         *  alive), the load was never removed from instList, its destructor
+         *  never ran, and the token was never freed — causing instcount to
+         *  grow without bound until the 1500-entry assertion fired.
+         *
+         *  Fix:
+         *   • Accumulate src_bits from source registers.
+         *   • REPLACE dependenceVectors[dest] with src_bits | own_token_bit
+         *     (load) or src_bits (non-load).  This is the dependency chain
+         *     that downstream consumers should inherit.
+         *   • Update inst->dependenceVector with src_bits ONLY — the load
+         *     must not include its own token bit in its own depVec.
+         */
 
         // Propagate forward all dependences of source registers.
         unsigned num_src_regs = inst->numSrcRegs();
-        uint32_t src_dependence_vector_ac = 0;
+        TokenManager::TokenDependenceVector src_dependence_vector_ac = 0;
 
         for (int src_idx = 0; src_idx < num_src_regs; src_idx++) {
-
-            // Get source reg.
             uint16_t renamed_src_reg = inst->renamedSrcIdx(src_idx)->index();
-
-            // Accumulate source's dependence vector.
-            TokenManager::TokenDependenceVector src_dependence_vector = dependenceVectors.find(renamed_src_reg) != dependenceVectors.end() ? dependenceVectors[renamed_src_reg] : 0;
-            src_dependence_vector_ac |= src_dependence_vector;
+            auto src_it = dependenceVectors.find(renamed_src_reg);
+            if (src_it != dependenceVectors.end())
+                src_dependence_vector_ac |= src_it->second;
         }
 
-        // Update dest's dependence vector
-        TokenManager::TokenDependenceVector existing_dest_dependence_vector = dependenceVectors.find(renamed_dest_reg) != dependenceVectors.end() ? dependenceVectors[renamed_dest_reg] : 0;
-        dependenceVectors[renamed_dest_reg] = existing_dest_dependence_vector | src_dependence_vector_ac;
+        // Set the dependency chain for this destination register (REPLACE,
+        // not OR — the old entry is stale from a previous register allocation).
+        // For a load with a valid token, downstream consumers must inherit the
+        // load's token bit; for everything else, only the source chain is
+        // propagated.
+        if (inst->isLoad() &&
+            inst->tokenID >= 1 && inst->tokenID <= MaxTokenID) {
+            dependenceVectors[renamed_dest_reg] = src_dependence_vector_ac |
+                ((TokenManager::TokenDependenceVector)1 << (inst->tokenID - 1));
+        } else {
+            dependenceVectors[renamed_dest_reg] = src_dependence_vector_ac;
+        }
 
-        // Update instruction's dependence vector (represents OR of dest registers' dependence vectors).
-        inst->dependenceVector |= dependenceVectors[renamed_dest_reg];
+        // Update this instruction's own dependenceVector with the source
+        // dependency bits only.  A load must NOT include its own token bit
+        // here — see Bug 2 above.
+        inst->dependenceVector |= src_dependence_vector_ac;
+
+        /** Selective Replay Support END */
 
         ++stats.renamedOperands;
     }
 
-    // Add to instruction Replay Queue if non-zero dependence vector
+    // Add to instruction Replay Queue if non-zero dependence vector.
+    // The replayQueue in InstructionQueue is populated at insert() time
+    // (where inst->dependenceVector is already fully computed).  Log here
+    // so that the rename-stage intent is visible in trace output.
     if (inst->dependenceVector) {
-        // TODO
+        DPRINTF(Rename, "[tid:%i] [sn:%llu] Instruction has non-zero "
+                "dependence vector 0x%016llx%016llx; will be tracked in IQ "
+                "replay queue on dispatch.\n",
+                tid, inst->seqNum,
+                (unsigned long long)(inst->dependenceVector >> 64),
+                (unsigned long long)(inst->dependenceVector));
     }
 }
 

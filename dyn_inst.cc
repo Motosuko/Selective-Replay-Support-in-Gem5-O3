@@ -219,8 +219,18 @@ DynInst::~DynInst()
         
     /** Selective Replay Support BEGIN */
 
-    // Deallocate token (if LOAD instruction) since this instruction has now completed!
-    if (isLoad()) {
+    // Deallocate token at destruction time as a safety net.
+    // Guard against null tokenManager and only deallocate valid token IDs
+    // (1..MaxTokenID); tokenID==0 means no token, tokenID==MaxTokenID+1 means
+    // allocation failed — neither should be deallocated.
+    if (tokenManager && isLoad() &&
+        tokenID >= 1 && tokenID <= MaxTokenID) {
+        // A non-zero tokenID at destruction means the eager release in
+        // InstructionQueue::commit() was not reached for this instruction
+        // (e.g. it was squashed before committing).  This is expected for
+        // squashed loads.  For committed loads the tokenID should have been
+        // zeroed by commit(); reaching here with tokenID != 0 for a committed
+        // load would indicate a missed deallocation.
         tokenManager->deallocateTokenID(tokenID);
     }
 

@@ -1,8 +1,11 @@
 #ifndef __CPU_O3_TOKEN_MANAGER_HH__
 #define __CPU_O3_TOKEN_MANAGER_HH__
 
+#include <cstdint>
+
 #include "base/types.hh"
 #include "cpu/o3/dyn_inst_ptr.hh"
+#include "cpu/o3/limits.hh"
 
 namespace gem5
 {
@@ -15,13 +18,37 @@ class TokenManager
 {
   public:
 
-    typedef uint64_t TokenDependenceVector;
+    /** 128-bit dependency-tracking vector; each bit corresponds to one
+     *  replay token (token ID k maps to bit k-1).  Using unsigned __int128
+     *  instead of uint64_t doubles the token pool from 64 to 128 entries
+     *  while keeping all existing bitwise operations (<<, &, |, ~, ==)
+     *  working without any changes to call sites.
+     */
+    typedef unsigned __int128 TokenDependenceVector;
+
+    // Enforce at compile time that MaxTokenID fits within the bit width of
+    // TokenDependenceVector so that shift expressions like
+    //   (TokenDependenceVector)1 << (tokenID - 1)
+    // are never undefined behaviour (max valid shift is bit_width - 1 = 127).
+    static_assert(MaxTokenID <= sizeof(TokenDependenceVector) * 8,
+        "MaxTokenID exceeds the bit width of TokenDependenceVector; "
+        "increase TokenDependenceVector width or reduce MaxTokenID.");
 
     /** Allocate next token for LOAD instruction */
     bool allocateTokenID(const DynInstPtr &inst);
 
     /** Deallocate specified token (to be used when instructions commit). */
     bool deallocateTokenID(unsigned token);
+
+    /** Return the current bitmask of allocated (active) tokens.
+     *  Used by InstructionQueue::insert() to filter out stale depVec bits
+     *  at dispatch time: if a bit is set in a dependent instruction's
+     *  dependenceVector but the corresponding token is no longer active
+     *  (its governing load has already committed and freed the token), that
+     *  bit should be cleared so the instruction does not get stuck in
+     *  instList waiting for a sweep that will never happen.
+     */
+    static TokenDependenceVector getActiveTokens() { return activeTokens; }
 
     /** Modifiers for debugging token allocation state tracking */
     void _incrementCurrentActiveTokenCount();
@@ -38,8 +65,8 @@ class TokenManager
 
   private:
     
-    /** Bitstring of active, allocated set of tokens */
-    static uint64_t activeTokens;
+    /** Bitstring of active, allocated set of tokens (128-bit wide) */
+    static unsigned __int128 activeTokens;
 
     /** Last token allocation completed, enables small optimization for token allocation */
     static unsigned lastAllocatedToken;
