@@ -432,6 +432,20 @@ class InstructionQueue
      */
     std::list<DynInstPtr> retryMemInsts;
 
+    /** Selective Replay Support BEGIN
+     *  Per-thread list of in-flight instructions that carry a non-zero
+     *  dependenceVector (i.e. they consume the result of at least one LOAD
+     *  that was given a replay token).  Used for efficient O(replayQ) scans
+     *  during violation() instead of walking the entire instList.
+     *  Entries are added at insert() and removed when:
+     *    - the instruction commits (its depVec has been zeroed by token frees),
+     *    - the instruction is squashed, or
+     *    - its depVec drops to 0 because every load-token it depended on was
+     *      freed at the time that load committed.
+     */
+    std::list<DynInstPtr> replayQueue[MaxThreads];
+    /** Selective Replay Support END */
+
     /**
      * Struct for comparing entries to be added to the priority queue.
      * This gives reverse ordering to the instructions in terms of
@@ -613,6 +627,11 @@ class InstructionQueue
         statistics::Vector fuBusy;
         /** Number of times the FU was busy per instruction issued. */
         statistics::Formula fuBusyRate;
+
+        /** Selective Replay Support: number of instruction re-issues triggered
+         *  by selective replay (violation detected, matching token found in
+         *  replayQueue). */
+        statistics::Scalar selectiveReplayInsts;
     } iqStats;
 
    public:

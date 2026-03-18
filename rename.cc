@@ -1245,9 +1245,15 @@ Rename::renameDestRegs(const DynInstPtr &inst, ThreadID tid)
         ++stats.renamedOperands;
     }
 
-    // Add to instruction Replay Queue if non-zero dependence vector
+    // Add to instruction Replay Queue if non-zero dependence vector.
+    // The replayQueue in InstructionQueue is populated at insert() time
+    // (where inst->dependenceVector is already fully computed).  Log here
+    // so that the rename-stage intent is visible in trace output.
     if (inst->dependenceVector) {
-        // TODO
+        DPRINTF(Rename, "[tid:%i] [sn:%llu] Instruction has non-zero "
+                "dependence vector 0x%lx; will be tracked in IQ replay "
+                "queue on dispatch.\n",
+                tid, inst->seqNum, inst->dependenceVector);
     }
 }
 

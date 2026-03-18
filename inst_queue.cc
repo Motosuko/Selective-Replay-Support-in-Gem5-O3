@@ -316,7 +316,10 @@ InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width)
       ADD_STAT(fuBusyRate,
                statistics::units::Rate<statistics::units::Count,
                                        statistics::units::Count>::get(),
-               "FU busy rate (busy events/executed inst)")
+               "FU busy rate (busy events/executed inst)"),
+      ADD_STAT(selectiveReplayInsts, statistics::units::Count::get(),
+               "Number of instructions re-issued via selective replay "
+               "(token-based violation recovery)")
 {
     instsAdded
         .prereq(instsAdded);
@@ -420,6 +423,9 @@ InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width)
         .flags(statistics::total)
         ;
     fuBusyRate = fuBusy / instsIssued;
+
+    selectiveReplayInsts
+        .prereq(selectiveReplayInsts);
 }
 
 InstructionQueue::IQIOStats::IQIOStats(statistics::Group *parent)
@@ -700,6 +706,20 @@ InstructionQueue::insert(const DynInstPtr &new_inst)
     } else {
         addIfReady(new_inst);
     }
+
+    /** Selective Replay Support BEGIN
+     *  If this instruction carries a non-zero dependence vector it consumes
+     *  the result of at least one load that was assigned a replay token.
+     *  Add it to the per-thread replayQueue so violation() can find it
+     *  in O(replayQ) rather than scanning the whole instList.
+     */
+    if (new_inst->dependenceVector) {
+        replayQueue[new_inst->threadNumber].push_back(new_inst);
+        DPRINTF(IQ, "[sn:%llu] Added to selective replay queue "
+                "(depVec=0x%lx).\n",
+                new_inst->seqNum, new_inst->dependenceVector);
+    }
+    /** Selective Replay Support END */
 
     ++iqStats.instsAdded;
 }
@@ -1065,26 +1085,61 @@ InstructionQueue::commit(const InstSeqNum &inst, ThreadID tid)
 
     while (iq_it != instList[tid].end() &&
            (*iq_it)->seqNum <= inst) {
-        // Clear the selective replay flag for committed instructions
-        // so it does not persist if the same DynInst object is ever
-        // revisited, keeping flag state consistent with instruction lifetime.
-        (*iq_it)->needsReplay = false;
-        ++iq_it;
-        instList[tid].pop_front();
-    } 
-    
-    /** Selective Replay Support BEGIN */
-    /**while (iq_it != instList[tid].end() && (*iq_it)->seqNum <= inst) {
 
-        if ((*iq_it)->dependenceVector == 0) {
-             printf("Removing from instList an instruction that has 0 dependencies.\n");
-	     iq_it = instList[tid].erase(iq_it);
+        /** Selective Replay Support BEGIN
+         *
+         *  When a load with a valid replay token commits, free that token
+         *  from every entry in the replayQueue.  Any entry whose dependence
+         *  vector drops to 0 is removed from the replayQueue here; it will
+         *  then be popped from instList on the same (or a later) pass
+         *  through this loop.
+         */
+        if ((*iq_it)->isLoad() &&
+            (*iq_it)->tokenID >= 1 &&
+            (*iq_it)->tokenID <= (unsigned)MaxTokenID) {
+
+            const TokenManager::TokenDependenceVector tokenBit =
+                (TokenManager::TokenDependenceVector)1 <<
+                    ((*iq_it)->tokenID - 1);
+
+            for (auto rq_it = replayQueue[tid].begin();
+                 rq_it != replayQueue[tid].end(); ) {
+                (*rq_it)->dependenceVector &= ~tokenBit;
+                if ((*rq_it)->dependenceVector == 0) {
+                    rq_it = replayQueue[tid].erase(rq_it);
+                } else {
+                    ++rq_it;
+                }
+            }
+
+            DPRINTF(IQ, "[tid:%i] [sn:%llu] Load committed; freed token %u "
+                    "from replayQueue.\n",
+                    tid, (*iq_it)->seqNum, (*iq_it)->tokenID);
         }
-        else {
-	     ++iq_it;
-	} 
-    }*/
-    /** Selective Replay Support END */
+
+        // Only remove instructions from instList whose dependence vector is
+        // now 0.  An instruction with a non-zero depVec still depends on the
+        // result of an in-flight load token; keep it in instList (and
+        // replayQueue) until that token is freed at the load's commit.
+        // Clear needsReplay so the flag does not persist on the DynInst
+        // after the instruction has committed.  An instruction can reach
+        // this point with needsReplay == true when violation() triggered
+        // a re-issue but the instruction committed before the re-execution
+        // completed (benign in the current selective-replay model where
+        // the ROB commit path is not gated on the replay result).
+        if ((*iq_it)->needsReplay) {
+            DPRINTF(IQ, "[tid:%i] [sn:%llu] Committing instruction that "
+                    "was marked for selective replay; clearing flag.\n",
+                    tid, (*iq_it)->seqNum);
+            (*iq_it)->needsReplay = false;
+        }
+        if ((*iq_it)->dependenceVector == 0) {
+            iq_it = instList[tid].erase(iq_it);
+        } else {
+            ++iq_it;
+        }
+        /** Selective Replay Support END */
+    }
 }
 
 int
@@ -1295,21 +1350,53 @@ InstructionQueue::violation(const DynInstPtr &store,
 {
     iqIOStats.intInstQueueWrites++;
 
-    /** Selective Replay Support BEGIN */
-    // Identify all younger in-flight instructions that depend on the
-    // faulting load's token and mark them for selective replay.
-    // Only process valid token IDs (1..MaxTokenID); tokenID==0 means no
-    // token and tokenID==MaxTokenID+1 means allocation failed.
+    /** Selective Replay Support BEGIN
+     *
+     *  On a memory-order violation, selectively re-issue only those
+     *  in-flight instructions whose dependenceVector contains the bit for
+     *  the faulting load's token ID.  Scanning the per-thread replayQueue
+     *  (which holds only instructions with non-zero dependenceVectors) is
+     *  far cheaper than walking the entire instList.
+     *
+     *  Re-issue strategy:
+     *    - Memory instructions: rescheduleMemInst() puts them back through
+     *      the mem-dep unit so they replay in program order.
+     *    - Non-memory instructions: clear the issued/canIssue flags and call
+     *      addIfReady() to re-enqueue them in the ready-to-issue list.
+     *
+     *  Only valid token IDs (1..MaxTokenID) are handled; tokenID 0 means
+     *  "no token" and MaxTokenID+1 means "allocation failed".
+     */
     const unsigned tokenID = faulting_load->tokenID;
     if (tokenID >= 1 && tokenID <= (unsigned)MaxTokenID) {
         const ThreadID tid = faulting_load->threadNumber;
         const TokenManager::TokenDependenceVector tokenBit =
             (TokenManager::TokenDependenceVector)1 << (tokenID - 1);
-        for (auto &inst : instList[tid]) {
+
+        for (const DynInstPtr &inst : replayQueue[tid]) {
             if (inst->seqNum > faulting_load->seqNum &&
                 !inst->isSquashed() &&
                 (inst->dependenceVector & tokenBit)) {
+
                 inst->needsReplay = true;
+                ++iqStats.selectiveReplayInsts;
+
+                DPRINTF(IQ, "[sn:%llu] Selective replay triggered by "
+                        "faulting load [sn:%llu] token %u.\n",
+                        inst->seqNum, faulting_load->seqNum, tokenID);
+
+                if (inst->isMemRef()) {
+                    // Re-enter the mem-dep pipeline so the instruction
+                    // replays respecting memory-order constraints.
+                    rescheduleMemInst(inst);
+                } else {
+                    // Re-enqueue non-memory instruction for re-execution.
+                    // clearIssued() + clearCanIssue() let addIfReady() put
+                    // it back on the ready list in the next schedule cycle.
+                    inst->clearIssued();
+                    inst->clearCanIssue();
+                    addIfReady(inst);
+                }
             }
         }
     }
@@ -1484,6 +1571,17 @@ InstructionQueue::doSquash(ThreadID tid)
         // the pipeline.
         squashed_inst->needsReplay = false;
     }
+
+    /** Selective Replay Support BEGIN
+     *  Remove all squashed instructions (seqNum > squashedSeqNum[tid]) from
+     *  the replayQueue in a single O(replayQ) pass.  This is necessary to
+     *  release the DynInstPtr references so the objects can be destroyed and
+     *  cpu->instcount stays bounded.
+     */
+    replayQueue[tid].remove_if([&](const DynInstPtr &inst) {
+        return inst->seqNum > squashedSeqNum[tid];
+    });
+    /** Selective Replay Support END */
 }
 
 bool
