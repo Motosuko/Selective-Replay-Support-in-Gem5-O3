@@ -1214,7 +1214,7 @@ Rename::renameDestRegs(const DynInstPtr &inst, ThreadID tid)
             // Record dependence on this token for this destination register.
             // Only set the bit for valid token IDs (1..MaxTokenID); tokenID==0
             // means no token and tokenID==MaxTokenID+1 means allocation failed.
-            if (inst->tokenID >= 1 && inst->tokenID <= (unsigned)MaxTokenID)
+            if (inst->tokenID >= 1 && inst->tokenID <= MaxTokenID)
                 dependenceVectors[renamed_dest_reg] = existing_dest_dependence_vector |
                     ((TokenManager::TokenDependenceVector)1 << (inst->tokenID - 1));
 

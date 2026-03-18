@@ -48,7 +48,12 @@ namespace o3
 
 static constexpr int MaxWidth = 16;
 static constexpr int MaxThreads = 4;
-static constexpr int MaxTokenID = 64; // Selective Replay Support - used as index into mem dependence vector
+
+/** Maximum number of simultaneous replay tokens.  Must not exceed the
+ *  bit-width of TokenManager::TokenDependenceVector (currently uint64_t).
+ *  A static_assert in token_manager.hh enforces this. */
+static constexpr unsigned MaxTokenID = 64;
+
 static constexpr int MaxRegisters = 32; // Selective Replay Support - used to init tracking array of dependence vectors for registers 
 // TODO: Make this set by param during init (and data structures get dynamically allocated during init)
 

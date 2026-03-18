@@ -1019,7 +1019,12 @@ InstructionQueue::scheduleReadyInsts()
             if (!issuing_inst->isMemRef()) {
                 // Memory instructions can not be freed from the IQ until they
                 // complete.
-                issuing_inst->clearInIQ();
+                // Guard with isInIQ(): selective replay may re-issue a
+                // non-mem instruction that was already cleared from the IQ
+                // unit at its first issue (iq == nullptr).  Skipping
+                // clearInIQ() is correct because the slot was freed then.
+                if (issuing_inst->isInIQ())
+                    issuing_inst->clearInIQ();
             } else {
                 memDepUnit[tid].issue(issuing_inst);
             }
@@ -1096,7 +1101,7 @@ InstructionQueue::commit(const InstSeqNum &inst, ThreadID tid)
          */
         if ((*iq_it)->isLoad() &&
             (*iq_it)->tokenID >= 1 &&
-            (*iq_it)->tokenID <= (unsigned)MaxTokenID) {
+            (*iq_it)->tokenID <= MaxTokenID) {
 
             const TokenManager::TokenDependenceVector tokenBit =
                 (TokenManager::TokenDependenceVector)1 <<
@@ -1172,7 +1177,13 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
         DPRINTF(IQ, "Completing mem instruction PC: %s [sn:%llu]\n",
             completed_inst->pcState(), completed_inst->seqNum);
 
-        completed_inst->clearInIQ();
+        // Guard with isInIQ(): a mem instruction re-scheduled for selective
+        // replay via rescheduleMemInst() may have had its IQ slot freed at
+        // first completion (iq == nullptr).  On the second completion, skip
+        // clearInIQ() — the slot was already freed and no double-release is
+        // needed.
+        if (completed_inst->isInIQ())
+            completed_inst->clearInIQ();
         completed_inst->memOpDone(true);
     } else if (completed_inst->isReadBarrier() ||
                completed_inst->isWriteBarrier()) {
@@ -1368,7 +1379,7 @@ InstructionQueue::violation(const DynInstPtr &store,
      *  "no token" and MaxTokenID+1 means "allocation failed".
      */
     const unsigned tokenID = faulting_load->tokenID;
-    if (tokenID >= 1 && tokenID <= (unsigned)MaxTokenID) {
+    if (tokenID >= 1 && tokenID <= MaxTokenID) {
         const ThreadID tid = faulting_load->threadNumber;
         const TokenManager::TokenDependenceVector tokenBit =
             (TokenManager::TokenDependenceVector)1 << (tokenID - 1);
@@ -1541,7 +1552,13 @@ InstructionQueue::doSquash(ThreadID tid)
             // inst will flow through the rest of the pipeline.
             squashed_inst->setIssued();
             squashed_inst->setCanCommit();
-            squashed_inst->clearInIQ();
+            // Guard with isInIQ(): a non-mem instruction re-issued by
+            // selective replay (via clearIssued()+addIfReady()) will have
+            // iq == nullptr because its IQ slot was freed at the original
+            // issue.  If a squash catches it before its re-execution
+            // completes, skip the redundant clearInIQ() call.
+            if (squashed_inst->isInIQ())
+                squashed_inst->clearInIQ();
         }
 
         // IQ clears out the heads of the dependency graph only when

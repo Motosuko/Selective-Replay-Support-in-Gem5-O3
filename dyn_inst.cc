@@ -224,7 +224,7 @@ DynInst::~DynInst()
     // (1..MaxTokenID); tokenID==0 means no token, tokenID==MaxTokenID+1 means
     // allocation failed — neither should be deallocated.
     if (tokenManager && isLoad() &&
-        tokenID >= 1 && tokenID <= (unsigned)MaxTokenID) {
+        tokenID >= 1 && tokenID <= MaxTokenID) {
         tokenManager->deallocateTokenID(tokenID);
     }
 

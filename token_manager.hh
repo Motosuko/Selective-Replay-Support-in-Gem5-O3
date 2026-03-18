@@ -1,8 +1,11 @@
 #ifndef __CPU_O3_TOKEN_MANAGER_HH__
 #define __CPU_O3_TOKEN_MANAGER_HH__
 
+#include <cstdint>
+
 #include "base/types.hh"
 #include "cpu/o3/dyn_inst_ptr.hh"
+#include "cpu/o3/limits.hh"
 
 namespace gem5
 {
@@ -16,6 +19,14 @@ class TokenManager
   public:
 
     typedef uint64_t TokenDependenceVector;
+
+    // Enforce at compile time that MaxTokenID fits within the bit width of
+    // TokenDependenceVector so that shift expressions like
+    //   (TokenDependenceVector)1 << (tokenID - 1)
+    // are never undefined behaviour (max valid shift is bit_width - 1 = 63).
+    static_assert(MaxTokenID <= sizeof(TokenDependenceVector) * 8,
+        "MaxTokenID exceeds the bit width of TokenDependenceVector; "
+        "increase TokenDependenceVector width or reduce MaxTokenID.");
 
     /** Allocate next token for LOAD instruction */
     bool allocateTokenID(const DynInstPtr &inst);
