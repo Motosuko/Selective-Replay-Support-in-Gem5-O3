@@ -1206,41 +1206,68 @@ Rename::renameDestRegs(const DynInstPtr &inst, ThreadID tid)
 
         uint16_t renamed_dest_reg = rename_result.first->index();
 
-        // Allocate token and record new dependence (to be trickled down) if instruction is load.
-        if (inst->isLoad()) {
-
-            TokenManager::TokenDependenceVector existing_dest_dependence_vector = dependenceVectors.find(renamed_dest_reg) != dependenceVectors.end() ? dependenceVectors[renamed_dest_reg] : 0;
-
-            // Record dependence on this token for this destination register.
-            // Only set the bit for valid token IDs (1..MaxTokenID); tokenID==0
-            // means no token and tokenID==MaxTokenID+1 means allocation failed.
-            if (inst->tokenID >= 1 && inst->tokenID <= MaxTokenID)
-                dependenceVectors[renamed_dest_reg] = existing_dest_dependence_vector |
-                    ((TokenManager::TokenDependenceVector)1 << (inst->tokenID - 1));
-
-            // TODO: Handle these structural issues of no more tokens being able to be allocated.
-        }
+        /** Selective Replay Support BEGIN
+         *
+         *  Compute the accumulated dependency vector from this instruction's
+         *  source registers FIRST.  Then assign a fresh (non-ORed) value to
+         *  dependenceVectors[dest], eliminating two bugs:
+         *
+         *  Bug 1 – stale bits: dependenceVectors[phys_reg] is never reset
+         *  when the physical register is freed and re-allocated.  If we OR
+         *  with the existing entry, new instructions inherit bits from
+         *  previous uses of the same physical register.  Those bits are
+         *  never cleared (the old load has already been destroyed), so the
+         *  instructions accumulate in replayQueue indefinitely.
+         *
+         *  Bug 2 – load self-token: the old code ORed the load's own token
+         *  bit into dependenceVectors[dest] *before* propagating sources, and
+         *  then did inst->dependenceVector |= dependenceVectors[dest].  This
+         *  put the load's OWN token bit into the load's own dependenceVector.
+         *  Because that bit is only cleared in commit() when the load's token
+         *  is re-encountered (which never happens while the load's DynInst is
+         *  alive), the load was never removed from instList, its destructor
+         *  never ran, and the token was never freed — causing instcount to
+         *  grow without bound until the 1500-entry assertion fired.
+         *
+         *  Fix:
+         *   • Accumulate src_bits from source registers.
+         *   • REPLACE dependenceVectors[dest] with src_bits | own_token_bit
+         *     (load) or src_bits (non-load).  This is the dependency chain
+         *     that downstream consumers should inherit.
+         *   • Update inst->dependenceVector with src_bits ONLY — the load
+         *     must not include its own token bit in its own depVec.
+         */
 
         // Propagate forward all dependences of source registers.
         unsigned num_src_regs = inst->numSrcRegs();
         TokenManager::TokenDependenceVector src_dependence_vector_ac = 0;
 
         for (int src_idx = 0; src_idx < num_src_regs; src_idx++) {
-
-            // Get source reg.
             uint16_t renamed_src_reg = inst->renamedSrcIdx(src_idx)->index();
-
-            // Accumulate source's dependence vector.
-            TokenManager::TokenDependenceVector src_dependence_vector = dependenceVectors.find(renamed_src_reg) != dependenceVectors.end() ? dependenceVectors[renamed_src_reg] : 0;
-            src_dependence_vector_ac |= src_dependence_vector;
+            auto src_it = dependenceVectors.find(renamed_src_reg);
+            if (src_it != dependenceVectors.end())
+                src_dependence_vector_ac |= src_it->second;
         }
 
-        // Update dest's dependence vector
-        TokenManager::TokenDependenceVector existing_dest_dependence_vector = dependenceVectors.find(renamed_dest_reg) != dependenceVectors.end() ? dependenceVectors[renamed_dest_reg] : 0;
-        dependenceVectors[renamed_dest_reg] = existing_dest_dependence_vector | src_dependence_vector_ac;
+        // Set the dependency chain for this destination register (REPLACE,
+        // not OR — the old entry is stale from a previous register allocation).
+        // For a load with a valid token, downstream consumers must inherit the
+        // load's token bit; for everything else, only the source chain is
+        // propagated.
+        if (inst->isLoad() &&
+            inst->tokenID >= 1 && inst->tokenID <= MaxTokenID) {
+            dependenceVectors[renamed_dest_reg] = src_dependence_vector_ac |
+                ((TokenManager::TokenDependenceVector)1 << (inst->tokenID - 1));
+        } else {
+            dependenceVectors[renamed_dest_reg] = src_dependence_vector_ac;
+        }
 
-        // Update instruction's dependence vector (represents OR of dest registers' dependence vectors).
-        inst->dependenceVector |= dependenceVectors[renamed_dest_reg];
+        // Update this instruction's own dependenceVector with the source
+        // dependency bits only.  A load must NOT include its own token bit
+        // here — see Bug 2 above.
+        inst->dependenceVector |= src_dependence_vector_ac;
+
+        /** Selective Replay Support END */
 
         ++stats.renamedOperands;
     }
