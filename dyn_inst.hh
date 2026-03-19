@@ -748,6 +748,17 @@ class DynInst : public ExecContext, public RefCounted
     }
     /** @} */
 
+    /** Drop any previously-recorded execution results so a replayed
+     *  instruction starts from a clean result state.
+     */
+    void
+    clearResultQueue()
+    {
+        while (!instResult.empty()) {
+            instResult.pop();
+        }
+    }
+
     /** Records that one of the source registers is ready. */
     void markSrcRegReady();
 
@@ -808,6 +819,30 @@ class DynInst : public ExecContext, public RefCounted
 
     /** Returns whether or not this instruction is committed. */
     bool isCommitted() const { return status[Committed]; }
+
+    /** Reset post-issue / post-execute state before selective replay.
+     *  This prevents the stale execution from remaining visible to issue,
+     *  completion, and commit logic while the instruction is being replayed.
+     */
+    void
+    prepareForSelectiveReplay(bool reset_translation = false)
+    {
+        clearIssued();
+        clearCanIssue();
+        clearCanCommit();
+        status.reset(Completed);
+        status.reset(ResultReady);
+        status.reset(Executed);
+        status.reset(AtCommit);
+        status.reset(Committed);
+        clearResultQueue();
+
+        if (reset_translation) {
+            translationStarted(false);
+            translationCompleted(false);
+            memOpDone(false);
+        }
+    }
 
     /** Sets this instruction as squashed. */
     void setSquashed();

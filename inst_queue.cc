@@ -1315,11 +1315,9 @@ InstructionQueue::rescheduleMemInst(const DynInstPtr &resched_inst)
 {
     DPRINTF(IQ, "Rescheduling mem inst [sn:%llu]\n", resched_inst->seqNum);
 
-    // Reset DTB translation state
-    resched_inst->translationStarted(false);
-    resched_inst->translationCompleted(false);
-
-    resched_inst->clearCanIssue();
+    // Reset the instruction back to a clean replayable state before
+    // re-entering the memory dependence pipeline.
+    resched_inst->prepareForSelectiveReplay(true);
     memDepUnit[resched_inst->threadNumber].reschedule(resched_inst);
 }
 
@@ -1435,10 +1433,10 @@ InstructionQueue::violation(const DynInstPtr &store,
                     rescheduleMemInst(inst);
                 } else {
                     // Re-enqueue non-memory instruction for re-execution.
-                    // clearIssued() + clearCanIssue() let addIfReady() put
-                    // it back on the ready list in the next schedule cycle.
-                    inst->clearIssued();
-                    inst->clearCanIssue();
+                    // Reset all post-execute / commit-visible state first so
+                    // the replay is the only execution visible to the rest of
+                    // the pipeline.
+                    inst->prepareForSelectiveReplay();
                     addIfReady(inst);
                 }
             }
