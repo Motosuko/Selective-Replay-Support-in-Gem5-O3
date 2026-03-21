@@ -1150,7 +1150,7 @@ Rename::renameDestRegs(const DynInstPtr &inst, ThreadID tid)
             ++stats.tokenOverAllocationEvents;
         }
     }
-    inst->dependenceVector = 0;
+    inst->dependenceVector.reset();
     
     // Rename the destination registers.
     for (int dest_idx = 0; dest_idx < num_dest_regs; dest_idx++) {
@@ -1240,7 +1240,7 @@ Rename::renameDestRegs(const DynInstPtr &inst, ThreadID tid)
 
         // Propagate forward all dependences of source registers.
         unsigned num_src_regs = inst->numSrcRegs();
-        TokenManager::TokenDependenceVector src_dependence_vector_ac = 0;
+        TokenManager::TokenDependenceVector src_dependence_vector_ac;
 
         for (int src_idx = 0; src_idx < num_src_regs; src_idx++) {
             uint16_t renamed_src_reg = inst->renamedSrcIdx(src_idx)->index();
@@ -1257,7 +1257,7 @@ Rename::renameDestRegs(const DynInstPtr &inst, ThreadID tid)
         if (inst->isLoad() &&
             inst->tokenID >= 1 && inst->tokenID <= MaxTokenID) {
             dependenceVectors[renamed_dest_reg] = src_dependence_vector_ac |
-                ((TokenManager::TokenDependenceVector)1 << (inst->tokenID - 1));
+                TokenManager::getTokenBit(inst->tokenID);
         } else {
             dependenceVectors[renamed_dest_reg] = src_dependence_vector_ac;
         }
@@ -1276,13 +1276,13 @@ Rename::renameDestRegs(const DynInstPtr &inst, ThreadID tid)
     // The replayQueue in InstructionQueue is populated at insert() time
     // (where inst->dependenceVector is already fully computed).  Log here
     // so that the rename-stage intent is visible in trace output.
-    if (inst->dependenceVector) {
+    if (inst->dependenceVector.any()) {
         DPRINTF(Rename, "[tid:%i] [sn:%llu] Instruction has non-zero "
-                "dependence vector 0x%016llx%016llx; will be tracked in IQ "
-                "replay queue on dispatch.\n",
+                "dependence vector %s; will be tracked in IQ replay queue "
+                "on dispatch.\n",
                 tid, inst->seqNum,
-                (unsigned long long)(inst->dependenceVector >> 64),
-                (unsigned long long)(inst->dependenceVector));
+                TokenManager::formatDependenceVector(
+                    inst->dependenceVector).c_str());
     }
 }
 

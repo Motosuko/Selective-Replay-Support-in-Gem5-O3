@@ -361,7 +361,7 @@ class DynInst : public ExecContext, public RefCounted
     /** Selective Replay Support BEGIN */
 
     /** Dependence vector on previous LOAD instructions, representing ORed dependencies of dest regs */
-    TokenManager::TokenDependenceVector dependenceVector = 0;
+    TokenManager::TokenDependenceVector dependenceVector;
 
     /** Dependence token ID for this instruction (if applicable; set to token if LOAD instruction; 0 otherwise) */
     unsigned tokenID = 0;

@@ -723,13 +723,13 @@ InstructionQueue::insert(const DynInstPtr &new_inst)
      */
     new_inst->dependenceVector &= TokenManager::getActiveTokens();
 
-    if (new_inst->dependenceVector) {
+    if (new_inst->dependenceVector.any()) {
         replayQueue[new_inst->threadNumber].push_back(new_inst);
         DPRINTF(IQ, "[sn:%llu] Added to selective replay queue "
-                "(depVec=0x%016llx%016llx).\n",
+                "(depVec=%s).\n",
                 new_inst->seqNum,
-                (unsigned long long)(new_inst->dependenceVector >> 64),
-                (unsigned long long)(new_inst->dependenceVector));
+                TokenManager::formatDependenceVector(
+                    new_inst->dependenceVector).c_str());
     }
     /** Selective Replay Support END */
 
@@ -1125,13 +1125,12 @@ InstructionQueue::commit(const InstSeqNum &inst, ThreadID tid)
             (*iq_it)->tokenID <= MaxTokenID) {
 
             const TokenManager::TokenDependenceVector tokenBit =
-                (TokenManager::TokenDependenceVector)1 <<
-                    ((*iq_it)->tokenID - 1);
+                TokenManager::getTokenBit((*iq_it)->tokenID);
 
             for (auto rq_it = replayQueue[tid].begin();
                  rq_it != replayQueue[tid].end(); ) {
                 (*rq_it)->dependenceVector &= ~tokenBit;
-                if ((*rq_it)->dependenceVector == 0) {
+                if ((*rq_it)->dependenceVector.none()) {
                     rq_it = replayQueue[tid].erase(rq_it);
                 } else {
                     ++rq_it;
@@ -1145,7 +1144,7 @@ InstructionQueue::commit(const InstSeqNum &inst, ThreadID tid)
             /** Token deallocation: release back to the free-list immediately
              *  on commit.  Waiting until DynInst destruction is too late:
              *  the DynInstPtr is held by the ROB history buffer and other
-             *  structures long after commit, exhausting the 128-entry pool.
+             *  structures long after commit, exhausting the replay-token pool.
              *  Zero tokenID so the DynInst destructor safety-net does not
              *  double-free the same slot.
              */
@@ -1171,7 +1170,7 @@ InstructionQueue::commit(const InstSeqNum &inst, ThreadID tid)
                     tid, (*iq_it)->seqNum);
             (*iq_it)->needsReplay = false;
         }
-        if ((*iq_it)->dependenceVector == 0) {
+        if ((*iq_it)->dependenceVector.none()) {
             iq_it = instList[tid].erase(iq_it);
         } else {
             ++iq_it;
@@ -1413,12 +1412,12 @@ InstructionQueue::violation(const DynInstPtr &store,
     if (tokenID >= 1 && tokenID <= MaxTokenID) {
         const ThreadID tid = faulting_load->threadNumber;
         const TokenManager::TokenDependenceVector tokenBit =
-            (TokenManager::TokenDependenceVector)1 << (tokenID - 1);
+            TokenManager::getTokenBit(tokenID);
 
         for (const DynInstPtr &inst : replayQueue[tid]) {
             if (inst->seqNum > faulting_load->seqNum &&
                 !inst->isSquashed() &&
-                (inst->dependenceVector & tokenBit)) {
+                (inst->dependenceVector & tokenBit).any()) {
 
                 inst->needsReplay = true;
                 ++iqStats.selectiveReplayInsts;

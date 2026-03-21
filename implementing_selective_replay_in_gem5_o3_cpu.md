@@ -2,7 +2,7 @@
 
 ## Abstract
 
-This work presents a practical selective replay implementation strategy for the gem5 O3 CPU that starts from a partially completed student prototype and turns it into a runnable, debuggable, and substantially more robust design. The core idea is to assign each renamed load a replay token, propagate token dependences through renamed destination registers, track only replay-relevant instructions in a replay queue, and trigger targeted re-execution when the memory-ordering machinery reports a load violation. In the current code base, the rename stage allocates tokens and builds dependence vectors, the instruction queue maintains a replay-only side structure, and the violation path reschedules only instructions whose dependence vectors include the offending token. The implementation also adds guard rails that were missing from the older prototype, including valid-token checks, a 128-bit dependence vector with a compile-time width check, active-token masking before replay tracking, eager token release at commit, replay-queue cleanup on squash, and explicit replay-state reset before rescheduling replayed instructions.
+This work presents a practical selective replay implementation strategy for the gem5 O3 CPU that starts from a partially completed student prototype and turns it into a runnable, debuggable, and substantially more robust design. The core idea is to assign each renamed load a replay token, propagate token dependences through renamed destination registers, track only replay-relevant instructions in a replay queue, and trigger targeted re-execution when the memory-ordering machinery reports a load violation. In the current code base, the rename stage allocates tokens and builds dependence vectors, the instruction queue maintains a replay-only side structure, and the violation path reschedules only instructions whose dependence vectors include the offending token. The implementation also adds guard rails that were missing from the older prototype, including valid-token checks, a 256-bit dependence vector, active-token masking before replay tracking, eager token release at commit, replay-queue cleanup on squash, and explicit replay-state reset before rescheduling replayed instructions.
 
 The main finding is twofold. First, selective replay in gem5 O3 is feasible without redesigning the entire pipeline: the existing rename, IQ, mem-dependence, and commit hooks are enough to build a working token-based mechanism. Second, correctness depends much more on instruction lifetime management than on token allocation itself. The largest remaining challenge is architectural cleanliness: replay-relevant metadata should live in a dedicated structure with clear insertion and eviction rules rather than piggybacking on the IQ's general-purpose `instList`. This paper therefore describes both what is implemented now and what must change next to make selective replay robust enough for long-running experiments and publication-quality evaluation.
 
@@ -18,7 +18,7 @@ This work advances the state of the art in the following ways:
 
 1. **It converts an incomplete student prototype into a coherent end-to-end selective replay design for gem5 O3.** The project now includes token allocation, dependence propagation, replay-set identification, targeted replay triggering, token cleanup, and replay-state reset in a single code path.
 2. **It introduces an explicit replay queue rather than relying on whole-pipeline squash semantics alone.** This queue narrows replay work to instructions that actually carry replay-relevant metadata.
-3. **It fixes key correctness hazards in token tracking.** These fixes include valid-token bounds checks, a compile-time width constraint for 128-bit token vectors, prevention of self-token insertion for loads, active-token masking to remove stale dependence bits, and eager deallocation at commit.
+3. **It fixes key correctness hazards in token tracking.** These fixes include valid-token bounds checks, a 256-bit token bitmap, prevention of self-token insertion for loads, active-token masking to remove stale dependence bits, and eager deallocation at commit.
 4. **It identifies the remaining architectural gap clearly.** The highest-priority next step is to move replay metadata out of the IQ's general `instList` lifetime and into a dedicated replay-tracking structure with well-defined eviction and cleanup policy.
 5. **It provides a practical template for future gem5 recovery research.** The design is simple enough to study and extend, yet concrete enough to serve as the starting point for experiments on memory dependence prediction, replay granularity, and speculative recovery cost.
 
@@ -55,17 +55,17 @@ The design is intentionally incremental: it reuses existing gem5 O3 structures r
 The implementation uses the following metadata per dynamic instruction:
 
 - `tokenID`: nonzero only for loads that successfully allocate a replay token.
-- `dependenceVector`: a 128-bit OR-accumulated bit vector indicating which earlier load tokens this instruction depends on.
+- `dependenceVector`: a 256-bit OR-accumulated bit vector indicating which earlier load tokens this instruction depends on.
 - `needsReplay`: a replay marker used once a violation identifies the instruction as part of the replay set.
 - `tokenManager`: pointer used for token release bookkeeping.
 
-The token state itself is managed by `TokenManager`, which keeps a static bitmap of active tokens, plus allocation/deallocation counters. The dependence vector is implemented as `unsigned __int128`, and the code includes a compile-time assertion ensuring that `MaxTokenID` never exceeds the bit width of the representation. This prevents undefined behavior from invalid shifts such as `1 << 128` and directly fixes one of the most dangerous bugs in the older prototype.
+The token state itself is managed by `TokenManager`, which keeps a static bitmap of active tokens, plus allocation/deallocation counters. The dependence vector is implemented as a 256-bit `std::bitset`, which avoids undefined behavior from over-shifting native integers and directly fixes one of the most dangerous bugs in the older prototype.
 
 ### 3. Token allocation at rename
 
 Selective replay begins in the rename stage. When a load is renamed, the implementation calls `TokenManager::allocateTokenID(inst)` and records the assigned token in the `DynInst`. This preserves one of the valuable ideas from the earlier CS 251A project: token allocation belongs at rename because rename already has access to instruction type, physical-register mappings, and the exact dynamic instruction instance that downstream stages will manipulate.
 
-The newer implementation keeps this policy but hardens it in two ways. First, token IDs are validated before later use, so `tokenID == 0` means “no token” and `tokenID == MaxTokenID + 1` means “allocation failed,” preventing accidental invalid shifts in later stages. Second, the token pool is widened to 128 bits and guarded with a `static_assert`, making the representation explicit and mechanically checked.
+The newer implementation keeps this policy but hardens it in two ways. First, token IDs are validated before later use, so `tokenID == 0` means “no token” and `tokenID == MaxTokenID + 1` means “allocation failed,” preventing accidental invalid shifts in later stages. Second, the token pool is widened to 256 entries and represented with a fixed-size bitset, making the representation explicit and mechanically safe.
 
 ### 4. Dependence-vector propagation
 

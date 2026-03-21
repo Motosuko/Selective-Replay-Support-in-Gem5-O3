@@ -50,10 +50,9 @@ static constexpr int MaxWidth = 16;
 static constexpr int MaxThreads = 4;
 
 /** Maximum number of simultaneous replay tokens.  Must not exceed the
- *  bit-width of TokenManager::TokenDependenceVector (currently
- *  unsigned __int128, i.e. 128 bits).
- *  A static_assert in token_manager.hh enforces this. */
-static constexpr unsigned MaxTokenID = 128;
+ *  compile-time size of TokenManager::TokenDependenceVector.
+ *  The current design supports 256 concurrent replay tokens. */
+static constexpr unsigned MaxTokenID = 256;
 
 static constexpr int MaxRegisters = 32; // Selective Replay Support - used to init tracking array of dependence vectors for registers 
 // TODO: Make this set by param during init (and data structures get dynamically allocated during init)
